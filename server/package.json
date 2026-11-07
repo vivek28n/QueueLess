@@ -7,10 +7,11 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "node test_e2e_auth.js && node test_e2e_queue.js && node test_persistence.js",
+    "test": "node test_e2e_auth.js && node test_e2e_queue.js && node test_persistence.js && node test_e2e_realtime.js",
     "test:auth": "node test_e2e_auth.js",
     "test:queue": "node test_e2e_queue.js",
-    "test:persistence": "node test_persistence.js"
+    "test:persistence": "node test_persistence.js",
+    "test:realtime": "node test_e2e_realtime.js"
   },
   "keywords": [
     "queueless",
@@ -32,6 +33,7 @@
   },
   "devDependencies": {
     "mongodb-memory-server": "^11.3.0",
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "socket.io-client": "^4.8.4"
   }
 }

@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import Queue from '../models/Queue.js';
 import Ticket from '../models/Ticket.js';
+import { emitTicketJoined } from '../services/socketService.js';
 
 /**
  * @desc    Get public queue info by unique queue code
@@ -143,6 +144,28 @@ export const joinQueue = async (req, res, next) => {
 
     const position = peopleAhead + 1;
     const estimatedWaitTimeMinutes = peopleAhead * (updatedQueue.averageServiceTime || 5);
+
+    // Emit real-time socket events after successful database operations
+    try {
+      const waitingCount = await Ticket.countDocuments({
+        queue: updatedQueue._id,
+        status: 'waiting',
+      });
+      const queueStats = {
+        waitingCount,
+        currentlyServing: updatedQueue.currentlyServing || 0,
+        estimatedWaitMinutes: waitingCount * (updatedQueue.averageServiceTime || 5),
+      };
+      const ticketPayload = {
+        ...ticket.toJSON(),
+        position,
+        peopleAhead,
+        estimatedWaitTimeMinutes,
+      };
+      emitTicketJoined(updatedQueue.business, updatedQueue.queueCode, ticketPayload, queueStats);
+    } catch (socketErr) {
+      console.warn('[Socket Notification Warning] emitTicketJoined failed:', socketErr.message);
+    }
 
     return res.status(201).json({
       status: 'success',

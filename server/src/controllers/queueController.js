@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import Queue from '../models/Queue.js';
 import Ticket from '../models/Ticket.js';
+import { emitQueueUpdated, emitTicketUpdated } from '../services/socketService.js';
 
 /**
  * @desc    Create a new Queue for the authenticated business
@@ -266,6 +267,19 @@ export const updateQueue = async (req, res, next) => {
 
     await queue.save();
 
+    // Real-time socket emission
+    try {
+      const waitingCount = await Ticket.countDocuments({ queue: queue._id, status: 'waiting' });
+      const queueStats = {
+        waitingCount,
+        currentlyServing: queue.currentlyServing || 0,
+        estimatedWaitMinutes: waitingCount * (queue.averageServiceTime || 5),
+      };
+      emitQueueUpdated(queue.business, queue.queueCode, queue.toJSON(), queueStats);
+    } catch (socketErr) {
+      console.warn('[Socket Notification Warning] emitQueueUpdated failed:', socketErr.message);
+    }
+
     return res.status(200).json({
       status: 'success',
       message: 'Queue updated successfully.',
@@ -339,6 +353,26 @@ export const callNextCustomer = async (req, res, next) => {
     // Update queue currentlyServing
     queue.currentlyServing = nextTicket.tokenNumber;
     await queue.save();
+
+    // Real-time socket emission
+    try {
+      const waitingCount = await Ticket.countDocuments({ queue: queue._id, status: 'waiting' });
+      const queueStats = {
+        waitingCount,
+        currentlyServing: queue.currentlyServing || 0,
+        estimatedWaitMinutes: waitingCount * (queue.averageServiceTime || 5),
+      };
+      const ticketPayload = {
+        ...nextTicket.toJSON(),
+        position: 0,
+        peopleAhead: 0,
+        estimatedWaitTimeMinutes: 0,
+      };
+      emitTicketUpdated(queue.business, queue.queueCode, ticketPayload, queueStats);
+      emitQueueUpdated(queue.business, queue.queueCode, queue.toJSON(), queueStats);
+    } catch (socketErr) {
+      console.warn('[Socket Notification Warning] emitQueueUpdated failed:', socketErr.message);
+    }
 
     return res.status(200).json({
       status: 'success',

@@ -19,16 +19,19 @@ import {
   UserX,
   X,
   Radio,
+  QrCode,
 } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import { Input } from '../components/ui/Input';
+import { QRCodeModal } from '../components/queue/QRCodeModal';
 import { useAuth } from '../context/AuthContext';
 import api from '../services/api';
+import socket, { joinAdminRoom } from '../services/socket';
 
 export const AdminDashboardPage = () => {
-  const { user, logout } = useAuth();
+  const { user, token, logout } = useAuth();
   const navigate = useNavigate();
 
   // State: Queues & Selection
@@ -48,6 +51,12 @@ export const AdminDashboardPage = () => {
   const [createQueueError, setCreateQueueError] = useState(null);
   const [creatingQueue, setCreatingQueue] = useState(false);
 
+  // State: QR Code Modal
+  const [isQRModalOpen, setIsQRModalOpen] = useState(false);
+
+  // State: Socket Connection & Real-time Status
+  const [socketStatus, setSocketStatus] = useState('connecting'); // 'connected' | 'reconnecting' | 'offline'
+
   // State: Feedback / Notifications
   const [notification, setNotification] = useState(null);
   const [copiedCode, setCopiedCode] = useState(false);
@@ -61,7 +70,6 @@ export const AdminDashboardPage = () => {
       setQueues(queueList);
 
       if (queueList.length > 0) {
-        // Maintain selection or select provided id or default to first
         setSelectedQueueId((prev) => {
           if (selectId) return selectId;
           if (prev && queueList.some((q) => q._id === prev)) return prev;
@@ -107,6 +115,111 @@ export const AdminDashboardPage = () => {
       fetchQueueDetails(selectedQueueId);
     }
   }, [selectedQueueId, fetchQueueDetails]);
+
+  const selectedQueue = selectedQueueDetails?.queue || queues.find((q) => q._id === selectedQueueId);
+
+  // Real-time Socket.IO Integration for Admin Console
+  useEffect(() => {
+    if (!user?.business?._id) return;
+
+    const businessId = user.business._id;
+    joinAdminRoom(businessId, selectedQueueId, token);
+
+    const onConnect = () => {
+      setSocketStatus('connected');
+      // Always re-fetch fresh state on connect / reconnect
+      if (selectedQueueId) {
+        fetchQueueDetails(selectedQueueId);
+      }
+    };
+
+    const onDisconnect = () => {
+      setSocketStatus('offline');
+    };
+
+    const onConnectError = () => {
+      setSocketStatus('reconnecting');
+    };
+
+    const onTicketJoined = (data) => {
+      if (selectedQueue && data.queueCode === selectedQueue.queueCode) {
+        setSelectedQueueDetails((prev) => {
+          if (!prev) return prev;
+          const exists = prev.waitingTickets.some(
+            (t) => (t._id || t.id) === (data.ticket._id || data.ticket.id)
+          );
+          if (exists) return prev;
+          const updatedWaiting = [...prev.waitingTickets, data.ticket].sort(
+            (a, b) => a.tokenNumber - b.tokenNumber
+          );
+          return {
+            ...prev,
+            waitingTickets: updatedWaiting,
+            stats: {
+              ...prev.stats,
+              waitingCount: data.stats?.waitingCount ?? updatedWaiting.length,
+              estimatedWaitMinutes:
+                data.stats?.estimatedWaitMinutes ??
+                updatedWaiting.length * (prev.queue.averageServiceTime || 5),
+            },
+          };
+        });
+      }
+
+      // Update token number in parent queues list
+      setQueues((prev) =>
+        prev.map((q) =>
+          q.queueCode === data.queueCode
+            ? { ...q, currentTokenNumber: data.ticket?.tokenNumber || q.currentTokenNumber }
+            : q
+        )
+      );
+    };
+
+    const onTicketUpdated = (data) => {
+      if (selectedQueue && data.queueCode === selectedQueue.queueCode) {
+        // Fetch authoritative state from DB on ticket changes
+        fetchQueueDetails(selectedQueueId);
+      }
+    };
+
+    const onQueueUpdated = (data) => {
+      if (selectedQueue && data.queueCode === selectedQueue.queueCode) {
+        setSelectedQueueDetails((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            queue: { ...prev.queue, ...data.queue },
+            stats: { ...prev.stats, ...data.stats },
+          };
+        });
+
+        setQueues((prev) =>
+          prev.map((q) => (q.queueCode === data.queueCode ? { ...q, ...data.queue } : q))
+        );
+      }
+    };
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('connect_error', onConnectError);
+    socket.on('ticket:joined', onTicketJoined);
+    socket.on('ticket:updated', onTicketUpdated);
+    socket.on('queue:updated', onQueueUpdated);
+
+    if (socket.connected) {
+      setSocketStatus('connected');
+    }
+
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('connect_error', onConnectError);
+      socket.off('ticket:joined', onTicketJoined);
+      socket.off('ticket:updated', onTicketUpdated);
+      socket.off('queue:updated', onQueueUpdated);
+    };
+  }, [user?.business?._id, selectedQueueId, selectedQueue?.queueCode, fetchQueueDetails, token, selectedQueue]);
 
   // Handle Logout
   const handleLogout = () => {
@@ -169,7 +282,6 @@ export const AdminDashboardPage = () => {
       await api.patch(`/queues/${selectedQueueId}`, { status: newStatus });
       showToast('success', `Queue status changed to ${newStatus.toUpperCase()}`);
       await fetchQueueDetails(selectedQueueId);
-      // update in parent list
       setQueues((prev) =>
         prev.map((q) => (q._id === selectedQueueId ? { ...q, status: newStatus } : q))
       );
@@ -238,7 +350,6 @@ export const AdminDashboardPage = () => {
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
-  const selectedQueue = selectedQueueDetails?.queue || queues.find((q) => q._id === selectedQueueId);
   const stats = selectedQueueDetails?.stats || {
     waitingCount: 0,
     servingCount: 0,
@@ -303,8 +414,31 @@ export const AdminDashboardPage = () => {
           </div>
         </div>
 
-        {/* Global Action Buttons */}
+        {/* Global Action Buttons & Connection Indicator */}
         <div className="flex items-center gap-3">
+          {/* Socket Real-time Connection Indicator */}
+          <div
+            className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 text-xs font-mono text-slate-300"
+            title={`Real-time WebSocket engine: ${socketStatus}`}
+          >
+            <span
+              className={`h-2 w-2 rounded-full ${
+                socketStatus === 'connected'
+                  ? 'bg-emerald-400 animate-pulse'
+                  : socketStatus === 'reconnecting'
+                  ? 'bg-amber-400 animate-pulse'
+                  : 'bg-rose-400'
+              }`}
+            />
+            <span className="hidden sm:inline">
+              {socketStatus === 'connected'
+                ? 'Live Sync'
+                : socketStatus === 'reconnecting'
+                ? 'Reconnecting'
+                : 'Offline'}
+            </span>
+          </div>
+
           <Button
             size="sm"
             variant="primary"
@@ -415,7 +549,7 @@ export const AdminDashboardPage = () => {
               <p className="text-xs text-slate-400">{selectedQueue.description || 'No description provided.'}</p>
             </div>
 
-            {/* Queue Code & Public Link */}
+            {/* Queue Code, QR Code & Public Links */}
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs font-mono text-slate-300">
                 <span className="text-slate-500">CODE:</span>
@@ -430,8 +564,19 @@ export const AdminDashboardPage = () => {
                 </button>
               </div>
 
+              {/* QR Code Action Button */}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setIsQRModalOpen(true)}
+                className="text-xs text-indigo-300 hover:text-white border-indigo-700/50 bg-indigo-950/40 hover:bg-indigo-900/40"
+              >
+                <QrCode className="h-3.5 w-3.5 text-indigo-400" />
+                <span>QR Code</span>
+              </Button>
+
               <Link
-                to={`/queue?code=${selectedQueue.queueCode}`}
+                to={`/queue/${selectedQueue.queueCode}`}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-950/50 border border-indigo-700/40 text-indigo-300 hover:text-white hover:bg-indigo-900/50 text-xs transition-colors"
@@ -511,7 +656,9 @@ export const AdminDashboardPage = () => {
                 </span>
               </div>
               <p className="text-[11px] text-emerald-400">
-                {activeTicket ? `Called at ${new Date(activeTicket.calledAt).toLocaleTimeString()}` : 'Ready for next token'}
+                {activeTicket
+                  ? `Called at ${new Date(activeTicket.calledAt).toLocaleTimeString()}`
+                  : 'Ready for next token'}
               </p>
             </Card>
 
@@ -586,7 +733,7 @@ export const AdminDashboardPage = () => {
                       </thead>
                       <tbody className="divide-y divide-slate-800/50">
                         {waitingTickets.map((t, idx) => (
-                          <tr key={t._id} className="hover:bg-slate-800/30 transition-colors">
+                          <tr key={t._id || t.id} className="hover:bg-slate-800/30 transition-colors">
                             <td className="py-3.5 pl-2 font-mono font-bold text-indigo-300">
                               <span className="px-2.5 py-1 rounded-lg bg-indigo-950/70 border border-indigo-700/40 text-xs">
                                 #{t.tokenNumber}
@@ -617,7 +764,7 @@ export const AdminDashboardPage = () => {
                               <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={() => handleSkipTicket(t._id)}
+                                onClick={() => handleSkipTicket(t._id || t.id)}
                                 disabled={actionLoading}
                                 className="text-xs py-1 px-2.5 text-slate-400 hover:text-amber-400 hover:border-amber-500/40"
                               >
@@ -641,7 +788,7 @@ export const AdminDashboardPage = () => {
                   </div>
                   <div className="divide-y divide-slate-800/40 text-xs">
                     {recentTickets.map((rt) => (
-                      <div key={rt._id} className="py-2.5 flex items-center justify-between">
+                      <div key={rt._id || rt.id} className="py-2.5 flex items-center justify-between">
                         <div className="flex items-center gap-2.5">
                           <span className="font-mono text-slate-300 font-bold">#{rt.tokenNumber}</span>
                           <span className="text-white">{rt.customerName}</span>
@@ -731,7 +878,7 @@ export const AdminDashboardPage = () => {
                       <Button
                         variant="secondary"
                         size="md"
-                        onClick={() => handleCompleteTicket(activeTicket._id)}
+                        onClick={() => handleCompleteTicket(activeTicket._id || activeTicket.id)}
                         disabled={actionLoading}
                         className="bg-emerald-950/80 hover:bg-emerald-900/80 text-emerald-300 border-emerald-700/50"
                       >
@@ -742,7 +889,7 @@ export const AdminDashboardPage = () => {
                       <Button
                         variant="secondary"
                         size="md"
-                        onClick={() => handleSkipTicket(activeTicket._id)}
+                        onClick={() => handleSkipTicket(activeTicket._id || activeTicket.id)}
                         disabled={actionLoading}
                         className="bg-amber-950/80 hover:bg-amber-900/80 text-amber-300 border-amber-700/50"
                       >
@@ -860,6 +1007,16 @@ export const AdminDashboardPage = () => {
             </form>
           </Card>
         </div>
+      )}
+
+      {/* Modal: QR Code Modal */}
+      {selectedQueue && (
+        <QRCodeModal
+          queue={selectedQueue}
+          businessName={user?.business?.name}
+          isOpen={isQRModalOpen}
+          onClose={() => setIsQRModalOpen(false)}
+        />
       )}
     </div>
   );

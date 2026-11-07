@@ -11,12 +11,16 @@ import {
   Phone,
   ArrowLeft,
   Volume2,
+  Share2,
+  Copy,
+  Check,
 } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Card } from '../components/ui/Card';
 import { Badge } from '../components/ui/Badge';
 import api from '../services/api';
+import socket, { joinQueueRoom, connectSocket } from '../services/socket';
 
 export const CustomerQueuePage = () => {
   const { queueId } = useParams();
@@ -43,8 +47,12 @@ export const CustomerQueuePage = () => {
   const [joiningQueue, setJoiningQueue] = useState(false);
   const [joinError, setJoinError] = useState(null);
 
-  // Refresh status state
+  // Real-time Socket status
+  const [socketStatus, setSocketStatus] = useState('connecting'); // 'connected' | 'reconnecting' | 'offline'
+
+  // Refresh status state & UI helpers
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // Sync state if URL changes
   useEffect(() => {
@@ -71,7 +79,7 @@ export const CustomerQueuePage = () => {
     }
   }, []);
 
-  // Fetch Ticket Status
+  // Fetch Ticket Status (authoritative database state)
   const fetchTicket = useCallback(async (ticketId) => {
     if (!ticketId) return;
     try {
@@ -107,18 +115,129 @@ export const CustomerQueuePage = () => {
     }
   }, [queueCode, fetchQueue, fetchTicket]);
 
-  // Periodic Polling (every 8 seconds) when customer has an active waiting or called ticket
+  // Real-time Socket.IO Connection & Event Listeners
   useEffect(() => {
-    if (!ticketData?.ticket?.id) return;
+    if (!queueCode) return;
+
+    connectSocket();
+    const activeTicketId = ticketData?.ticket?.id || localStorage.getItem(`queueless_ticket_${queueCode}`);
+    joinQueueRoom(queueCode, activeTicketId);
+
+    const onConnect = () => {
+      setSocketStatus('connected');
+      // On reconnect, always fetch latest authoritative DB state
+      fetchQueue(queueCode);
+      if (activeTicketId) {
+        fetchTicket(activeTicketId);
+      }
+    };
+
+    const onDisconnect = () => {
+      setSocketStatus('offline');
+    };
+
+    const onConnectError = () => {
+      setSocketStatus('reconnecting');
+    };
+
+    const onQueueState = (stateData) => {
+      if (stateData?.queue) {
+        setQueueInfo({
+          queue: stateData.queue,
+          stats: stateData.stats,
+        });
+      }
+      if (stateData?.ticket) {
+        setTicketData((prev) => ({
+          ...prev,
+          ticket: { ...(prev?.ticket || {}), ...stateData.ticket },
+          position: stateData.ticket.position,
+          peopleAhead: stateData.ticket.peopleAhead,
+          estimatedWaitTimeMinutes: stateData.ticket.estimatedWaitTimeMinutes,
+          queue: stateData.queue,
+        }));
+      }
+    };
+
+    const onQueueUpdated = (data) => {
+      if (data.queueCode === queueCode) {
+        setQueueInfo((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            queue: data.queue ? { ...prev.queue, ...data.queue } : prev.queue,
+            stats: data.stats ? { ...prev.stats, ...data.stats } : prev.stats,
+          };
+        });
+
+        // If we hold an active ticket, refresh position
+        const currentTicketId = ticketData?.ticket?.id || localStorage.getItem(`queueless_ticket_${queueCode}`);
+        if (currentTicketId) {
+          fetchTicket(currentTicketId);
+        }
+      }
+    };
+
+    const onTicketUpdated = (data) => {
+      const currentTicketId = ticketData?.ticket?.id || localStorage.getItem(`queueless_ticket_${queueCode}`);
+      if (data.ticket && currentTicketId && (data.ticket.id === currentTicketId || data.ticket._id === currentTicketId)) {
+        setTicketData((prev) => ({
+          ...prev,
+          ticket: { ...(prev?.ticket || {}), ...data.ticket },
+          position: data.ticket.position ?? prev?.position,
+          peopleAhead: data.ticket.peopleAhead ?? prev?.peopleAhead,
+          estimatedWaitTimeMinutes: data.ticket.estimatedWaitTimeMinutes ?? prev?.estimatedWaitTimeMinutes,
+          queue: { ...(prev?.queue || {}), currentlyServing: data.stats?.currentlyServing ?? prev?.queue?.currentlyServing },
+        }));
+      } else if (data.queueCode === queueCode && currentTicketId) {
+        // Someone else was called/completed, refresh our line position
+        fetchTicket(currentTicketId);
+      }
+    };
+
+    const onQueueError = (errData) => {
+      console.warn('[Socket Queue Error]', errData?.message);
+    };
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('connect_error', onConnectError);
+    socket.on('queue:state', onQueueState);
+    socket.on('queue:updated', onQueueUpdated);
+    socket.on('ticket:updated', onTicketUpdated);
+    socket.on('queue:error', onQueueError);
+
+    if (socket.connected) {
+      setSocketStatus('connected');
+    }
+
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('connect_error', onConnectError);
+      socket.off('queue:state', onQueueState);
+      socket.off('queue:updated', onQueueUpdated);
+      socket.off('ticket:updated', onTicketUpdated);
+      socket.off('queue:error', onQueueError);
+    };
+  }, [queueCode, ticketData?.ticket?.id, fetchQueue, fetchTicket]);
+
+  // Periodic Polling Fallback when socket is offline or reconnecting
+  useEffect(() => {
+    const currentTicketId = ticketData?.ticket?.id;
+    if (!currentTicketId) return;
+
     const terminalStatuses = ['completed', 'skipped', 'cancelled'];
     if (terminalStatuses.includes(ticketData.ticket.status)) return;
 
+    // Fast polling if socket offline; gentle background sync if socket connected
+    const pollIntervalMs = socketStatus === 'connected' ? 25000 : 8000;
     const interval = setInterval(() => {
-      fetchTicket(ticketData.ticket.id);
-    }, 8000);
+      fetchTicket(currentTicketId);
+    }, pollIntervalMs);
 
     return () => clearInterval(interval);
-  }, [ticketData?.ticket?.id, ticketData?.ticket?.status, fetchTicket]);
+  }, [ticketData?.ticket?.id, ticketData?.ticket?.status, socketStatus, fetchTicket]);
 
   // Handle Search Submission
   const handleSearchSubmit = (e) => {
@@ -152,6 +271,8 @@ export const CustomerQueuePage = () => {
       if (newTicketId) {
         localStorage.setItem(`queueless_ticket_${queueCode}`, newTicketId);
         setTicketData(responseData);
+        // Subscribe to socket room for this specific ticket
+        joinQueueRoom(queueCode, newTicketId);
       }
 
       setCustomerName('');
@@ -184,6 +305,14 @@ export const CustomerQueuePage = () => {
     }
   };
 
+  // Handle Share / Copy Link
+  const handleCopyShareLink = () => {
+    const url = window.location.href;
+    navigator.clipboard.writeText(url);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
   const queue = queueInfo?.queue;
   const isCalled = ticketData?.ticket?.status === 'called';
   const isServing = ticketData?.ticket?.status === 'serving';
@@ -192,27 +321,48 @@ export const CustomerQueuePage = () => {
 
   return (
     <div className="min-h-[calc(100vh-144px)] py-8 px-4 sm:px-6 lg:px-8 max-w-2xl mx-auto space-y-6">
-      {/* Top Breadcrumb / Navigation */}
+      {/* Top Header / Navigation & Socket Status */}
       <div className="flex items-center justify-between text-xs text-slate-400">
         <Link to="/" className="inline-flex items-center gap-1.5 hover:text-white transition-colors">
           <ArrowLeft className="h-3.5 w-3.5" />
           <span>Home</span>
         </Link>
-        {queueCode && (
-          <button
-            type="button"
-            onClick={() => {
-              setQueueCode('');
-              setSearchInput('');
-              setSearchParams({});
-              setTicketData(null);
-              setQueueInfo(null);
-            }}
-            className="hover:text-indigo-400 transition-colors"
-          >
-            Change Queue
-          </button>
-        )}
+
+        <div className="flex items-center gap-3">
+          {queueCode && (
+            <div
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900 border border-slate-800 text-[11px] font-mono text-slate-300"
+              title={`Real-time WebSocket: ${socketStatus}`}
+            >
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  socketStatus === 'connected'
+                    ? 'bg-emerald-400 animate-pulse'
+                    : socketStatus === 'reconnecting'
+                    ? 'bg-amber-400 animate-pulse'
+                    : 'bg-rose-400'
+                }`}
+              />
+              <span className="capitalize">{socketStatus === 'connected' ? 'Live' : socketStatus}</span>
+            </div>
+          )}
+
+          {queueCode && (
+            <button
+              type="button"
+              onClick={() => {
+                setQueueCode('');
+                setSearchInput('');
+                setSearchParams({});
+                setTicketData(null);
+                setQueueInfo(null);
+              }}
+              className="hover:text-indigo-400 transition-colors"
+            >
+              Change Queue
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Screen 1: Search for Queue if none selected or not found */}
@@ -258,17 +408,17 @@ export const CustomerQueuePage = () => {
             )}
           </Card>
         </div>
-      ) : loadingQueue ? (
+      ) : loadingQueue && !queueInfo ? (
         <Card className="p-12 text-center space-y-4">
           <RefreshCw className="h-8 w-8 animate-spin text-indigo-400 mx-auto" />
           <p className="text-sm text-slate-400">Loading live queue status...</p>
         </Card>
       ) : ticketData ? (
         /* Screen 2: Active Ticket Display & Live Position Tracker */
-        <div className="space-y-6">
+        <div className="space-y-6 animate-fade-in">
           {/* Urgent Callout Alert if Called */}
           {(isCalled || isServing) && (
-            <div className="p-5 rounded-2xl bg-gradient-to-r from-emerald-950/90 to-teal-950/90 border-2 border-emerald-500 shadow-2xl shadow-emerald-500/20 text-emerald-100 space-y-2 animate-pulse">
+            <div className="p-5 rounded-2xl bg-gradient-to-r from-emerald-950/90 to-teal-950/90 border-2 border-emerald-500 shadow-2xl shadow-emerald-500/25 text-emerald-100 space-y-2 animate-pulse">
               <div className="flex items-center gap-2.5 text-base font-bold text-white">
                 <Volume2 className="h-6 w-6 text-emerald-400 shrink-0" />
                 <span>IT IS YOUR TURN! PLEASE PROCEED TO THE DESK</span>
@@ -364,8 +514,8 @@ export const CustomerQueuePage = () => {
               </div>
             </div>
 
-            {/* Actions: Manual Refresh & Leave */}
-            <div className="flex items-center justify-between pt-4 gap-3">
+            {/* Actions: Manual Refresh, Share & Leave */}
+            <div className="flex items-center justify-between pt-4 gap-3 border-t border-slate-800/60">
               <button
                 type="button"
                 onClick={handleManualRefresh}
@@ -376,19 +526,31 @@ export const CustomerQueuePage = () => {
                 <span>Check Live Status</span>
               </button>
 
-              <button
-                type="button"
-                onClick={handleLeaveQueue}
-                className="text-xs text-slate-500 hover:text-rose-400 transition-colors"
-              >
-                Release Ticket
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleCopyShareLink}
+                  className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-white transition-colors"
+                  title="Share ticket link"
+                >
+                  {copiedLink ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Share2 className="h-3.5 w-3.5" />}
+                  <span>{copiedLink ? 'Copied' : 'Share'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleLeaveQueue}
+                  className="text-xs text-slate-500 hover:text-rose-400 transition-colors"
+                >
+                  Release
+                </button>
+              </div>
             </div>
           </Card>
         </div>
       ) : (
         /* Screen 3: Queue Details & Join Form */
-        <div className="space-y-6">
+        <div className="space-y-6 animate-fade-in">
           {/* Queue Overview Header Card */}
           <Card className="p-6 border-slate-800 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">

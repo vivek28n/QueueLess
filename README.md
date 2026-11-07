@@ -72,6 +72,31 @@ Physical waiting lines in clinics, dining establishments, government offices, an
 - **100% Verified Disk Storage Persistence**:
   - Configured with dedicated persistent WiredTiger storage in `server/.data/db`, verified across full server restarts.
 
+### ✅ Phase 4: Real-Time Updates & QR Code Integration
+- **Socket.IO Event-Driven Architecture**:
+  - Room isolation:
+    - Public room: `queue:${queueCode}` for guest broadcasts (status changes, waiting counts).
+    - Personal ticket room: `ticket:${ticketId}` for targeted customer summons.
+    - Private admin room: `admin:business:${businessId}` protected with JWT authentication and strict multi-tenant ownership enforcement.
+  - Real-time events:
+    - `queue:join`: Customer room subscription with initial `queue:state` payload.
+    - `queue:updated`: Real-time queue telemetry broadcasts (counter changes, waiting counts, pause/resume).
+    - `ticket:joined`: Real-time desk alert when new patrons enter line.
+    - `ticket:updated`: Instant patron dispatch summons and lifecycle changes (`called`, `completed`, `skipped`).
+    - `queue:error`: Error feedback for invalid queue codes or unauthorized actions.
+- **Security & Privacy Guardrails**:
+  - Database remains the strict source of truth; all socket broadcasts trigger only after atomic database writes succeed.
+  - Public events strictly omit private patron contact details; contact information is delivered exclusively to authenticated staff rooms.
+  - Admin connections require verified Bearer JWT tokens; cross-business room subscriptions are rejected.
+- **Resilient Frontend Real-Time Sync**:
+  - Automatic reconnection handling: on reconnection, clients re-fetch authoritative database state rather than trusting stale in-memory data.
+  - Dual-mode network resilience: auto-switches to background polling fallback when disconnected or offline.
+  - Live connection status indicators (`Live Sync`, `Reconnecting`, `Offline`).
+- **QR Code Engine (`qrcode.react`)**:
+  - Auto-generates scannable QR codes for each queue using public `queueCode` URLs (no internal database IDs exposed).
+  - High-resolution branded PNG download capability with queue code, venue header, and scanning instructions.
+  - One-click public link copy with visual clipboard confirmation.
+
 ---
 
 ## 🛠️ Technology Stack

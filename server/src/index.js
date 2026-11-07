@@ -4,6 +4,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import { Server as SocketIOServer } from 'socket.io';
 import { connectDB } from './config/db.js';
+import { initSocketServer } from './services/socketService.js';
 import healthRoutes from './routes/healthRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import queueRoutes from './routes/queueRoutes.js';
@@ -29,14 +30,8 @@ export const io = new SocketIOServer(server, {
   },
 });
 
-// Real-time connection handler skeleton
-io.on('connection', (socket) => {
-  console.log(`[Socket.IO] Client connected: ${socket.id}`);
-
-  socket.on('disconnect', () => {
-    console.log(`[Socket.IO] Client disconnected: ${socket.id}`);
-  });
-});
+// Real-time Socket.IO Server Engine
+initSocketServer(io);
 
 // Middleware
 app.use(

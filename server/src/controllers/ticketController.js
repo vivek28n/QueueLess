@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import Ticket, { isValidTransition } from '../models/Ticket.js';
 import Queue from '../models/Queue.js';
+import { emitTicketUpdated } from '../services/socketService.js';
 
 /**
  * @desc    Skip a ticket
@@ -51,6 +52,22 @@ export const skipTicket = async (req, res, next) => {
       });
       queue.currentlyServing = activeTicket ? activeTicket.tokenNumber : 0;
       await queue.save();
+    }
+
+    // Real-time socket emission
+    try {
+      const q = queue || (await Queue.findById(ticket.queue));
+      if (q) {
+        const waitingCount = await Ticket.countDocuments({ queue: q._id, status: 'waiting' });
+        const queueStats = {
+          waitingCount,
+          currentlyServing: q.currentlyServing || 0,
+          estimatedWaitMinutes: waitingCount * (q.averageServiceTime || 5),
+        };
+        emitTicketUpdated(ticket.business, q.queueCode, ticket.toJSON(), queueStats);
+      }
+    } catch (socketErr) {
+      console.warn('[Socket Notification Warning] skipTicket failed:', socketErr.message);
     }
 
     return res.status(200).json({
@@ -112,6 +129,22 @@ export const completeTicket = async (req, res, next) => {
       });
       queue.currentlyServing = activeTicket ? activeTicket.tokenNumber : 0;
       await queue.save();
+    }
+
+    // Real-time socket emission
+    try {
+      const q = queue || (await Queue.findById(ticket.queue));
+      if (q) {
+        const waitingCount = await Ticket.countDocuments({ queue: q._id, status: 'waiting' });
+        const queueStats = {
+          waitingCount,
+          currentlyServing: q.currentlyServing || 0,
+          estimatedWaitMinutes: waitingCount * (q.averageServiceTime || 5),
+        };
+        emitTicketUpdated(ticket.business, q.queueCode, ticket.toJSON(), queueStats);
+      }
+    } catch (socketErr) {
+      console.warn('[Socket Notification Warning] completeTicket failed:', socketErr.message);
     }
 
     return res.status(200).json({
