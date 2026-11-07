@@ -4,14 +4,18 @@
   "description": "Backend API & Real-time engine for QueueLess Smart Live Queue Management System",
   "main": "src/index.js",
   "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "node test_e2e_auth.js && node test_e2e_queue.js && node test_persistence.js && node test_e2e_realtime.js",
+    "test": "node test_e2e_auth.js && node test_e2e_queue.js && node test_persistence.js && node test_e2e_realtime.js && node test_phase5_production.js",
     "test:auth": "node test_e2e_auth.js",
     "test:queue": "node test_e2e_queue.js",
     "test:persistence": "node test_persistence.js",
-    "test:realtime": "node test_e2e_realtime.js"
+    "test:realtime": "node test_e2e_realtime.js",
+    "test:production": "node test_phase5_production.js"
   },
   "keywords": [
     "queueless",

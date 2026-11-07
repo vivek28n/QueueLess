@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Building2, User, Mail, Lock, ArrowRight, AlertCircle, Sparkles } from 'lucide-react';
+import { Building2, User, Mail, Lock, ArrowRight, AlertCircle } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Card } from '../components/ui/Card';

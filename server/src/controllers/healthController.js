@@ -11,6 +11,7 @@ export const getHealthStatus = (req, res) => {
 
   const dbState = mongoose.connection.readyState;
   const persistence = getDbPersistenceInfo();
+  const isProduction = process.env.NODE_ENV === 'production';
 
   res.status(200).json({
     status: 'ok',
@@ -23,7 +24,8 @@ export const getHealthStatus = (req, res) => {
       status: dbStatusMap[dbState] || 'unknown',
       readyState: dbState,
       isPersistent: persistence.isPersistent,
-      storagePath: persistence.storagePath,
+      // Protect sensitive cluster URI credentials in production
+      storagePath: isProduction ? 'Atlas/External Cluster' : persistence.storagePath,
     },
     system: {
       memoryUsage: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,

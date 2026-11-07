@@ -32,7 +32,7 @@ const isPortOpen = (port = 27017, host = '127.0.0.1') => {
   });
 };
 
-// Locate a mongod binary
+// Locate a mongod binary for local development fallback
 const findMongodBinary = () => {
   if (process.env.MONGOD_PATH && fs.existsSync(process.env.MONGOD_PATH)) {
     return process.env.MONGOD_PATH;
@@ -54,7 +54,33 @@ const findMongodBinary = () => {
 export const connectDB = async () => {
   const configuredUri = process.env.MONGODB_URI;
 
-  // 1. External MongoDB URI (Atlas or remote cluster)
+  // 1. Strict Production Mode: Require MongoDB Atlas or remote cluster
+  if (process.env.NODE_ENV === 'production') {
+    if (!configuredUri) {
+      console.error(
+        '[Database Fatal] MONGODB_URI environment variable is required in production mode. ' +
+        'Please configure a MongoDB Atlas connection string in your Render environment variables. ' +
+        'Local database fallback is strictly prohibited in production.'
+      );
+      process.exit(1);
+    }
+
+    try {
+      console.log('[Database] Connecting to production MongoDB cluster...');
+      const conn = await mongoose.connect(configuredUri, {
+        serverSelectionTimeoutMS: 10000,
+      });
+      console.log(`[Database] Successfully connected to production MongoDB: ${conn.connection.host}`);
+      isPersistentStorage = true;
+      persistentStoragePath = 'MongoDB Atlas / External Cluster';
+      return conn;
+    } catch (error) {
+      console.error(`[Database Fatal] Production MongoDB connection failed: ${error.message}`);
+      process.exit(1);
+    }
+  }
+
+  // 2. Non-Production: External MongoDB URI (Atlas or remote cluster)
   if (configuredUri && !configuredUri.includes('localhost') && !configuredUri.includes('127.0.0.1')) {
     try {
       const conn = await mongoose.connect(configuredUri, {
@@ -62,17 +88,14 @@ export const connectDB = async () => {
       });
       console.log(`[Database] Connected to external MongoDB: ${conn.connection.host}`);
       isPersistentStorage = true;
-      persistentStoragePath = configuredUri;
+      persistentStoragePath = 'external-cluster';
       return conn;
     } catch (error) {
       console.error(`[Database Error] External MongoDB connection failed: ${error.message}`);
-      if (process.env.NODE_ENV === 'production') {
-        process.exit(1);
-      }
     }
   }
 
-  // 2. Check if a local MongoDB daemon is already running on port 27017
+  // 3. Non-Production: Check if a local MongoDB daemon is already running on port 27017
   const portOpen = await isPortOpen(27017, '127.0.0.1');
   const localUri = configuredUri || 'mongodb://127.0.0.1:27017/queueless';
 
@@ -90,7 +113,7 @@ export const connectDB = async () => {
     }
   }
 
-  // 3. Local daemon is not running; start local persistent mongod instance
+  // 4. Non-Production Local fallback: start local persistent mongod instance in .data/db
   const mongodBin = findMongodBinary();
   const dataDir = process.env.MONGODB_DATA_DIR || path.resolve(__dirname, '../../.data/db');
 
@@ -151,6 +174,7 @@ export const disconnectDB = async () => {
         }
       }
       await mongoose.disconnect();
+      console.log('[Database] Disconnected from MongoDB cleanly.');
     }
   } catch (err) {
     console.warn(`[Database Disconnect Warning] ${err.message}`);
@@ -167,15 +191,4 @@ export const disconnectDB = async () => {
 export const getDbPersistenceInfo = () => ({
   isPersistent: isPersistentStorage,
   storagePath: persistentStoragePath,
-});
-
-// Process cleanup hooks to ensure clean database shutdown
-process.on('SIGINT', async () => {
-  await disconnectDB();
-  process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-  await disconnectDB();
-  process.exit(0);
 });

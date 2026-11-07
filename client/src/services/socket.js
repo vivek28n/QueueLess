@@ -1,6 +1,33 @@
 import { io } from 'socket.io-client';
 
-const SOCKET_SERVER_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
+/**
+ * Dynamically resolves the Socket.IO server URL:
+ * 1. Checks VITE_SOCKET_URL if explicitly specified.
+ * 2. If VITE_API_URL is provided, extracts its root (stripping /api).
+ * 3. In non-localhost browser environments (production deployment without env vars), uses window.location.origin.
+ * 4. In local development fallback, connects to http://localhost:5000.
+ */
+const resolveSocketServerUrl = () => {
+  if (import.meta.env.VITE_SOCKET_URL) {
+    return import.meta.env.VITE_SOCKET_URL.trim().replace(/\/+$/, '');
+  }
+
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL.trim().replace(/\/api\/?$/, '').replace(/\/+$/, '');
+  }
+
+  if (
+    typeof window !== 'undefined' &&
+    window.location.hostname !== 'localhost' &&
+    window.location.hostname !== '127.0.0.1'
+  ) {
+    return window.location.origin;
+  }
+
+  return 'http://localhost:5000';
+};
+
+const SOCKET_SERVER_URL = resolveSocketServerUrl();
 
 const getAuthToken = () => {
   try {
@@ -48,21 +75,33 @@ export const disconnectSocket = () => {
 };
 
 /**
- * Join public customer queue room
+ * Join a customer public queue room
  */
-export const joinQueueRoom = (queueCode, ticketId = null) => {
+export const joinQueueRoom = (queueCode, callback) => {
   if (!queueCode) return;
-  connectSocket();
-  socket.emit('queue:join', { queueCode, ticketId });
+  if (!socket.connected) {
+    socket.connect();
+  }
+  socket.emit('queue:join', { queueCode }, (response) => {
+    if (callback) callback(response);
+  });
 };
 
 /**
- * Join admin private business room
+ * Join an authenticated admin business room
  */
-export const joinAdminRoom = (businessId, queueId = null, token = null) => {
-  const authToken = token || getAuthToken();
-  connectSocket(authToken);
-  socket.emit('admin:join', { businessId, queueId, token: authToken });
+export const joinAdminRoom = (callback) => {
+  const token = getAuthToken();
+  if (!token) {
+    if (callback) callback({ status: 'error', message: 'Authentication required' });
+    return;
+  }
+  if (!socket.connected) {
+    connectSocket(token);
+  }
+  socket.emit('admin:subscribe', { token }, (response) => {
+    if (callback) callback(response);
+  });
 };
 
 export default socket;

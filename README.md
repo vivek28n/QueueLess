@@ -1,101 +1,85 @@
 # QueueLess — Smart Live Queue Management System
 
-A real-world full-stack web application where customers can join business queues digitally and track their live queue position, while administrators manage customers, service counters, and queues in real time.
+A production-ready, full-stack live queue management system built with Node.js, Express, Socket.IO, MongoDB, React 19, and Tailwind CSS. Customers can join virtual queues via contactless QR code check-in and track their live place-in-line with sub-millisecond WebSocket updates, while venue administrators manage service counters and dispatches in real time.
 
 ---
 
-## 📌 Problem Statement
+## 📌 Architecture Overview
 
-Physical waiting lines in clinics, dining establishments, government offices, and retail customer service desks waste millions of human hours every day. Traditional paper-ticket queue systems suffer from:
-- **Zero mobility**: Customers are tethered to crowded waiting rooms to watch a numbered screen or listen for loudspeaker announcements.
-- **Uncertainty & Frustration**: Patrons have no accurate insight into estimated wait times or staff capacity.
-- **Congestion & Friction**: Facilities struggle with overcrowded lobbies, high walk-out/abandonment rates, and inefficient manual counter management.
+```mermaid
+flowchart TD
+    subgraph Client ["Frontend (Vercel / React 19 + Vite)"]
+        UI["Landing & Customer Queue Portal"]
+        AdminUI["Admin Live Management Console"]
+        AxiosClient["Axios API Client (Bearer JWT)"]
+        SocketClient["Socket.IO Client (Auto Reconnect)"]
+    end
 
-**QueueLess** solves this by providing a contactless, mobile-friendly virtual queue operating system with instant guest access (no mobile app download required) and real-time operational control desks for venue staff.
+    subgraph Backend ["Backend API & Real-Time Engine (Render / Node.js)"]
+        ExpressApp["Express API Server (Port 5000 / 0.0.0.0)"]
+        SecHeaders["Security Headers & Rate Limiting"]
+        SocketServer["Socket.IO Server Engine"]
+        AuthMiddleware["JWT Authentication & Multi-Tenant Isolation"]
+    end
+
+    subgraph Database ["Persistent Storage (MongoDB Atlas / WiredTiger)"]
+        DB[(MongoDB Database)]
+        BusinessCol["businesses collection"]
+        QueueCol["queues collection (Atomic $inc)"]
+        TicketCol["tickets collection"]
+    end
+
+    UI -->|HTTP / QR Scan| AxiosClient
+    AdminUI -->|Authenticated Controls| AxiosClient
+    AxiosClient -->|REST API Requests| SecHeaders
+    SecHeaders --> ExpressApp
+    ExpressApp --> AuthMiddleware
+    AuthMiddleware --> DB
+
+    UI <-->|WebSocket: queue:join, ticket:updated| SocketClient
+    AdminUI <-->|WebSocket: admin:subscribe| SocketClient
+    SocketClient <-->|Bi-directional Events| SocketServer
+    ExpressApp -->|Emit after atomic DB commit| SocketServer
+```
 
 ---
 
-## 🚀 Features Completed (Phases 1 & 2)
+## 🚀 Key Features
 
-### ✅ Phase 1: Foundation, Infrastructure & Design System
-- **Modern Dark SaaS UI**: High-contrast, clean layout featuring deep navy/slate palettes (`#090D16`), subtle gradients, and glassmorphic elevation.
-- **Responsive Navigation & Landing Page**:
-  - Hero section with live ticket showcase simulation.
-  - Core engine capabilities (zero-polling WebSocket design, QR check-in, intelligent wait time estimation, multi-counter dispatch).
-  - 3-step guest workflow ("Scan & Join", "Live Tracking", "Instant Summon").
-  - Target industry verticals showcase (Healthcare, Dining, Banking, Retail, Public Services).
-- **Reusable Component Library**: Modally accessible, composable UI primitives in `client/src/components/ui/` (`Button`, `Card`, `Badge`, `Input`).
-- **Client-Side Routing**: Built using React Router DOM v7 with dedicated routes for guest queues, authentication, and the admin portal.
-- **Backend Infrastructure**: Express server configured with ES modules, CORS, Socket.IO real-time server instance, and `/api/health` system diagnostics.
+### 1. Contactless QR Code Customer Check-In
+- Instant virtual waiting room entry by scanning a counter QR code or opening a short link.
+- **Zero App Friction**: Runs directly in any mobile web browser without requiring customer app installations or account creation.
+- Dynamic high-resolution QR code generator with branded printable export (PNG) for front-desk counters.
+- Generates clean public URLs using unique public `queueCode` identifiers (never exposing internal database IDs).
 
-### ✅ Phase 2: Database Architecture & Authentication
-- **Multi-Tenant MongoDB Models**:
-  - `Business`: Stores venue profiles with unique, auto-generated slug identifiers (e.g., `QL-CLINIC-7A89F0`) and industry categorization.
-  - `User`: Handles role-based accounts (`admin`, `staff`) with mandatory association to a verified `Business`.
-- **Security & Password Protection**:
-  - Secure password hashing using `bcryptjs` (10 salt rounds) with pre-save hooks.
-  - Credential isolation: password hashes are excluded from queries (`select: false`) and sanitized in `toJSON()`.
-- **JWT Authentication API**:
-  - `POST /api/auth/register`: Atomic registration of a new organization and its initial administrator account.
-  - `POST /api/auth/login`: Credential verification against bcrypt hashes with role validation and token generation.
-  - `GET /api/auth/me`: Authenticated session retrieval with populated business details.
-- **Middleware Protection**:
-  - `authenticate`: Validates Bearer JWTs, checks token expiration, and loads the user entity.
-  - `authorize`: Enforces role-based permissions (`admin` vs. `staff`).
-  - `verifyBusinessOwnership`: Rejects cross-tenant access attempts.
-- **Frontend Auth Integration**:
-  - `AuthContext`: Centralized React state providing persistent authentication via `localStorage`, session verification, and `logout()` handling.
-  - `ProtectedRoute`: React route guard with loading state, automatic login redirect with return-URL preservation, and role validation.
+### 2. Live WebSocket Queue Tracking
+- Powered by Socket.IO with bi-directional streaming and fallback transports (`websocket`, `polling`).
+- Real-time updates for:
+  - Live place in line (`position` and `peopleAhead`).
+  - Rolling estimated wait times based on average service speeds.
+  - Desk dispatch summons (`"Now Serving Token #X"`).
+  - Audio chimes and visual screen alerts when summoned.
+- Automatic reconnection with authoritative database state synchronization to prevent stale in-memory state.
 
-### ✅ Phase 3: Core Queue Management
-- **Production Mongoose Models**:
-  - `Queue`: Organization reference, unique public identifier (`queueCode`), operational status (`active`, `paused`, `closed`), `currentTokenNumber`, `currentlyServing`, and configurable `averageServiceTime`.
-  - `Ticket`: Queue and business references, sequential `tokenNumber`, patron identity (`customerName`, private `customerContact`), operational lifecycle status (`waiting`, `called`, `serving`, `completed`, `skipped`, `cancelled`), and accurate timing metrics (`joinedAt`, `calledAt`, `completedAt`).
-- **Concurrency-Safe Atomic Token Generation**:
-  - Employs atomic MongoDB `$inc` operations with compound unique indexes (`{ queue: 1, tokenNumber: 1 }`) to eliminate race conditions and guarantee zero duplicate token collisions during simultaneous customer arrivals.
-- **Robust REST API Endpoints**:
-  - **Admin Queue Management (Authenticated)**:
-    - `POST /api/queues`: Creates queues with automated or custom slug generation.
-    - `GET /api/queues`: Retrieves organization queues with real-time aggregated metrics (waiting, serving, completed, estimated wait).
-    - `GET /api/queues/:id`: Detailed queue statistics, current counter session, and waiting line stream.
-    - `PATCH /api/queues/:id`: Live status adjustments (`active`, `paused`, `closed`) and operational tuning.
-    - `POST /api/queues/:id/next`: Dispatches next waiting patron to counter with automatic completion of prior sessions.
-    - `PATCH /api/tickets/:id/skip`: Skips patron with valid state-machine transition validation.
-    - `PATCH /api/tickets/:id/complete`: Concludes counter session and updates live counter state.
-  - **Public Customer APIs (Zero-Auth Guest Portal)**:
-    - `GET /api/public/queues/:queueCode`: Public queue information and real-time waiting line estimates with strict privacy isolation (no contact leak).
-    - `POST /api/public/queues/:queueCode/join`: Instant token acquisition with live position and wait time calculation (enforcing active-queue constraints).
-    - `GET /api/public/tickets/:ticketId`: Real-time position tracking (`peopleAhead`, `position`, `estimatedWaitTimeMinutes`) directly from MongoDB.
-- **Frontend Admin Desk & Guest Portals**:
-  - `AdminDashboardPage`: Interactive queue switcher, live counter dispatch console, waiting queue table, quick status controls, and queue creation modal.
-  - `CustomerQueuePage`: Mobile-first responsive digital ticket tracker with live position polling, urgent counter summon banners, and persistent ticket state restoration across page refreshes.
-- **100% Verified Disk Storage Persistence**:
-  - Configured with dedicated persistent WiredTiger storage in `server/.data/db`, verified across full server restarts.
+### 3. High-Throughput Admin Control Console
+- Multi-queue operational dashboard for front-desk staff and administrators.
+- Instant actions: **"Call Next"**, **"Skip"**, and **"Complete"** with strict state machine validation.
+- Live queue metrics: Waiting patrons, active counter session, completed count, and daily throughput.
+- Queue status switching (`active`, `paused`, `closed`) with immediate real-time broadcast to all waiting customers.
 
-### ✅ Phase 4: Real-Time Updates & QR Code Integration
-- **Socket.IO Event-Driven Architecture**:
-  - Room isolation:
-    - Public room: `queue:${queueCode}` for guest broadcasts (status changes, waiting counts).
-    - Personal ticket room: `ticket:${ticketId}` for targeted customer summons.
-    - Private admin room: `admin:business:${businessId}` protected with JWT authentication and strict multi-tenant ownership enforcement.
-  - Real-time events:
-    - `queue:join`: Customer room subscription with initial `queue:state` payload.
-    - `queue:updated`: Real-time queue telemetry broadcasts (counter changes, waiting counts, pause/resume).
-    - `ticket:joined`: Real-time desk alert when new patrons enter line.
-    - `ticket:updated`: Instant patron dispatch summons and lifecycle changes (`called`, `completed`, `skipped`).
-    - `queue:error`: Error feedback for invalid queue codes or unauthorized actions.
-- **Security & Privacy Guardrails**:
-  - Database remains the strict source of truth; all socket broadcasts trigger only after atomic database writes succeed.
-  - Public events strictly omit private patron contact details; contact information is delivered exclusively to authenticated staff rooms.
-  - Admin connections require verified Bearer JWT tokens; cross-business room subscriptions are rejected.
-- **Resilient Frontend Real-Time Sync**:
-  - Automatic reconnection handling: on reconnection, clients re-fetch authoritative database state rather than trusting stale in-memory data.
-  - Dual-mode network resilience: auto-switches to background polling fallback when disconnected or offline.
-  - Live connection status indicators (`Live Sync`, `Reconnecting`, `Offline`).
-- **QR Code Engine (`qrcode.react`)**:
-  - Auto-generates scannable QR codes for each queue using public `queueCode` URLs (no internal database IDs exposed).
-  - High-resolution branded PNG download capability with queue code, venue header, and scanning instructions.
-  - One-click public link copy with visual clipboard confirmation.
+### 4. Concurrency-Safe Atomic Token Issuance
+- Eliminates duplicate token collisions under heavy traffic spikes using atomic MongoDB `$inc` operations combined with compound unique indexes (`{ queue: 1, tokenNumber: 1 }`).
+- Guaranteed strictly sequential token numbering per queue.
+
+### 5. Multi-Tenant Business Isolation & Role-Based Access Control
+- Every queue and ticket is strictly scoped to a verified `Business` entity.
+- Role-based JWT authentication (`admin` and `staff`).
+- Cross-tenant requests are strictly blocked at both HTTP and WebSocket boundaries.
+
+### 6. Production Security & Reliability Hardening
+- **Sliding-Window Rate Limiting**: Built-in protection on `/api/auth/login` (brute-force defense) and `/api/public/queues/:queueCode/join` (anti-spam token throttling).
+- **Hardened HTTP Headers**: Strict `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `X-XSS-Protection: 1; mode=block`, `Referrer-Policy: strict-origin-when-cross-origin`, HSTS, and removal of `X-Powered-By`.
+- **Database Safety Guard**: Strict production mode forbids local `.data` fallback and requires MongoDB Atlas connection; unhandled server errors sanitize stack traces from client responses.
 
 ---
 
@@ -103,284 +87,340 @@ Physical waiting lines in clinics, dining establishments, government offices, an
 
 | Layer | Technologies |
 | :--- | :--- |
-| **Frontend** | React 19, Vite 8, React Router DOM 7 |
-| **Styling** | Tailwind CSS v4, Lucide React Icons |
-| **Backend** | Node.js (v18+), Express 5 (ES Modules) |
-| **Database** | MongoDB, Mongoose 9 (Atlas, Local, or Embedded In-Memory fallback) |
-| **Real-Time Layer** | Socket.IO 4 |
-| **Authentication** | JSON Web Tokens (`jsonwebtoken`), `bcryptjs` |
-| **HTTP Client** | Axios (configured with base URL proxy and token interceptors) |
+| **Frontend Framework** | React 19, Vite 8, React Router DOM 7 |
+| **Styling & UI** | Tailwind CSS v4, Lucide React Icons |
+| **Backend Framework** | Node.js (v18+), Express 5 (ES Modules) |
+| **Real-Time Engine** | Socket.IO 4 (WebSockets with polling fallback) |
+| **Database** | MongoDB 6+ / 7+, Mongoose 9 (Atlas / Persistent WiredTiger) |
+| **Security & Auth** | JSON Web Tokens (`jsonwebtoken`), `bcryptjs`, Rate Limiting |
+| **QR Code Engine** | `qrcode.react` (Canvas render with branded canvas export) |
+| **Linting & Testing** | `oxlint`, Native Node.js test runner with assertion suite |
 
 ---
 
-## 📁 Project Architecture & Directory Structure
+## 📁 Repository Structure
 
 ```text
 queueless/
-├── client/                     # Frontend React + Vite application
-│   ├── public/                 # Static assets & favicons
+├── client/                     # Frontend React + Vite SPA
+│   ├── public/                 # Static assets & icons
 │   ├── src/
 │   │   ├── components/
 │   │   │   ├── auth/           # Route guards (ProtectedRoute)
 │   │   │   ├── layout/         # Header/Navbar, Footer
-│   │   │   └── ui/             # Reusable UI primitives (Button, Card, Badge, Input)
+│   │   │   ├── queue/          # QRCodeModal with export engine
+│   │   │   └── ui/             # UI primitives (Button, Card, Badge, Input)
 │   │   ├── context/
-│   │   │   └── AuthContext.jsx # Global auth provider (user, token, session restoration)
+│   │   │   └── AuthContext.jsx # Global auth session & JWT handling
 │   │   ├── pages/
-│   │   │   ├── LandingPage.jsx       # SaaS landing page & value proposition
-│   │   │   ├── LoginPage.jsx         # Admin & Staff sign-in portal
-│   │   │   ├── RegisterPage.jsx      # Organization & Admin registration
-│   │   │   ├── CustomerQueuePage.jsx # Guest live ticket tracking & lookup
-│   │   │   ├── AdminDashboardPage.jsx# Protected admin console & engine telemetry
-│   │   │   └── NotFoundPage.jsx      # 404 fallback page
+│   │   │   ├── LandingPage.jsx       # Dark SaaS value proposition & search
+│   │   │   ├── LoginPage.jsx         # Staff & admin sign-in portal
+│   │   │   ├── RegisterPage.jsx      # Organization & admin registration
+│   │   │   ├── CustomerQueuePage.jsx # Mobile-first customer live ticket view
+│   │   │   ├── AdminDashboardPage.jsx# Admin desk & real-time dispatch desk
+│   │   │   └── NotFoundPage.jsx      # 404 error page
 │   │   ├── services/
-│   │   │   ├── api.js          # Axios client with proxy & Bearer token interceptor
-│   │   │   └── socket.js       # Socket.IO client instance
-│   │   ├── App.jsx             # React Router route registry
-│   │   ├── index.css           # Tailwind v4 configuration & theme tokens
-│   │   └── main.jsx            # Application mount point
-│   ├── package.json
-│   ├── package-lock.json
-│   └── vite.config.js          # Tailwind v4 plugin + API reverse proxy setup
+│   │   │   ├── api.js          # Axios client with base URL & token interceptor
+│   │   │   └── socket.js       # Socket.IO connection manager & rooms
+│   │   ├── App.jsx             # React Router routing table
+│   │   ├── index.css           # Tailwind CSS v4 theme variables
+│   │   └── main.jsx            # React root mount
+│   ├── .env.example            # Client environment variable template
+│   ├── package.json            # Client dependencies & scripts
+│   ├── vercel.json             # Vercel SPA routing rewrites & security headers
+│   └── vite.config.js          # Vite config with dev proxy & Tailwind plugin
 │
-├── server/                     # Backend Node.js + Express API & Socket.IO
+├── server/                     # Backend Express API & Real-Time Server
 │   ├── src/
 │   │   ├── config/
-│   │   │   └── db.js           # Multi-mode MongoDB connection manager
+│   │   │   └── db.js           # Production MongoDB Atlas connection & dev engine
 │   │   ├── controllers/
-│   │   │   ├── authController.js   # register, login, getMe handlers
-│   │   │   └── healthController.js # System status & diagnostics
+│   │   │   ├── authController.js        # Registration, login, session handlers
+│   │   │   ├── healthController.js      # Diagnostics & safe persistence health
+│   │   │   ├── queueController.js       # Admin queue management & dispatch
+│   │   │   ├── publicQueueController.js # Guest queue query, join & ticket check
+│   │   │   └── ticketController.js      # Ticket status updates (skip, complete)
 │   │   ├── middleware/
-│   │   │   ├── authMiddleware.js # authenticate, authorize, verifyBusinessOwnership
-│   │   │   └── errorHandler.js   # Global 404 & error handlers
+│   │   │   ├── authMiddleware.js        # JWT validation & multi-tenant security
+│   │   │   ├── errorHandler.js          # 404 handler & sanitized error middleware
+│   │   │   ├── rateLimiter.js           # Sliding-window brute force & join throttler
+│   │   │   └── securityHeaders.js       # Standard production security headers
 │   │   ├── models/
-│   │   │   ├── Business.js     # Multi-tenant business schema
-│   │   │   └── User.js         # User schema with bcrypt password hashing
+│   │   │   ├── Business.js              # Multi-tenant business schema
+│   │   │   ├── User.js                  # User accounts with bcrypt hashing
+│   │   │   ├── Queue.js                 # Queue schema with atomic counters
+│   │   │   └── Ticket.js                # Ticket lifecycle & state machine
 │   │   ├── routes/
-│   │   │   ├── authRoutes.js   # Authentication routes
-│   │   │   └── healthRoutes.js # Health-check router
+│   │   │   ├── authRoutes.js            # POST /register, POST /login, GET /me
+│   │   │   ├── healthRoutes.js          # GET /api/health
+│   │   │   ├── queueRoutes.js           # Authenticated /api/queues routes
+│   │   │   ├── publicRoutes.js          # Public /api/public routes
+│   │   │   └── ticketRoutes.js          # Authenticated /api/tickets routes
+│   │   ├── services/
+│   │   │   └── socketService.js         # Socket.IO room lifecycle & event hub
 │   │   ├── utils/
-│   │   │   └── token.js        # JWT issuance and token validation
-│   │   └── index.js            # Express server, Socket.IO & CORS configuration
-│   ├── test_e2e_auth.js        # Automated Phase 2 end-to-end verification suite
-│   ├── .env.example            # Environment template with placeholders
-│   ├── package.json
-│   └── package-lock.json
+│   │   │   └── token.js                 # JWT sign and verification utilities
+│   │   └── index.js                     # Express setup, 0.0.0.0 binding, CORS
+│   ├── .env.example            # Backend environment variable template
+│   ├── package.json            # Server dependencies & test commands
+│   ├── test_e2e_auth.js        # Phase 2 Auth & Proxy verification suite
+│   ├── test_e2e_queue.js       # Phase 3 Queue Management & Concurrency suite
+│   ├── test_persistence.js     # Persistent storage verification across restarts
+│   ├── test_e2e_realtime.js    # Phase 4 Socket.IO Real-Time & QR Code suite
+│   └── test_phase5_production.js# Phase 5 Security, Headers & Production suite
 │
-├── .gitignore                  # Git ignore rules for secrets, builds, and dependencies
-├── package.json                # Root workspace scripts orchestrator
-├── package-lock.json
-└── README.md
+├── .gitignore                  # Global ignore rules (secrets, builds, node_modules)
+├── package.json                # Workspace orchestrator
+└── README.md                   # System documentation & deployment manual
 ```
 
 ---
 
-## ⚙️ Installation & Environment Setup
+## 🌐 Complete API Specification
 
-### 1. Clone & Prerequisites
-- **Node.js**: v18.0.0 or higher (v24.x tested)
-- **npm**: v9.0.0 or higher
-- **MongoDB**: Optional (Connect to MongoDB Atlas or local MongoDB; if unavailable, an embedded in-memory MongoDB server runs automatically during development).
+### Authentication APIs (`/api/auth`)
+
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/auth/register` | Public | Register new business organization and primary administrator account. |
+| `POST` | `/api/auth/login` | Public (Rate Limited) | Authenticate user with email and password; returns JWT token. |
+| `GET` | `/api/auth/me` | Authenticated | Retrieve authenticated user profile and business metadata. |
+
+### Admin Queue Management APIs (`/api/queues`)
+
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/queues` | Authenticated Admin | Create a new queue with optional custom queue code. |
+| `GET` | `/api/queues` | Authenticated Admin | List all queues belonging to the authenticated business with live stats. |
+| `GET` | `/api/queues/:id` | Authenticated Admin | Get queue details, waiting ticket roster, and performance metrics. |
+| `PATCH` | `/api/queues/:id` | Authenticated Admin | Update queue metadata, status (`active`, `paused`, `closed`), or avg service time. |
+| `POST` | `/api/queues/:id/next` | Authenticated Admin | Call next waiting customer; automatically completes previous active ticket. |
+
+### Admin Ticket Management APIs (`/api/tickets`)
+
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `PATCH` | `/api/tickets/:id/skip` | Authenticated Admin | Skip a customer ticket with valid state transition verification. |
+| `PATCH` | `/api/tickets/:id/complete` | Authenticated Admin | Mark ticket complete and conclude counter session. |
+
+### Public Customer APIs (`/api/public`)
+
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/public/queues/:queueCode` | Public | Retrieve public queue status, current serving token, and estimated wait. |
+| `POST` | `/api/public/queues/:queueCode/join` | Public (Rate Limited) | Join active queue; atomically generates sequential token and returns ticket. |
+| `GET` | `/api/public/tickets/:ticketId` | Public | Real-time position lookup (`position`, `peopleAhead`, `estimatedWaitTimeMinutes`). |
+
+### System Health & Diagnostics (`/api/health`)
+
+| Method | Endpoint | Access | Description |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/health` | Public | Returns service uptime, memory usage, environment, and sanitized DB status. |
+
+---
+
+## ⚡ Socket.IO Real-Time Protocol
+
+### Connection & Room Architecture
+
+- **Public Room**: `queue:<queueCode>` — Joined by customers. Receives queue updates (`queue:updated`).
+- **Private Customer Room**: `ticket:<ticketId>` — Joined by individual customers. Receives personal summon updates (`ticket:updated`).
+- **Private Business Room**: `admin:business:<businessId>` — Joined only by verified administrators using Bearer JWT. Receives `ticket:joined`, `ticket:updated`, and `queue:updated`.
+
+### Events Reference
+
+```text
+Client -> Server:
+  queue:join       { queueCode }           -> Subscribe to public queue room
+  admin:subscribe  { token }               -> Subscribe to authenticated business room
+
+Server -> Client:
+  queue:state      { queue, stats }        -> Initial state upon joining room
+  queue:updated    { queue, stats }        -> Emitted on counter calls, pause/resume, status shifts
+  ticket:joined    { ticket, stats }       -> Emitted to admin room when patron joins line
+  ticket:updated   { ticket, position, ...}-> Emitted to patron when called, skipped, or completed
+  queue:error      { message }             -> Emitted on malformed codes or unauthorized actions
+```
+
+---
+
+## 🚀 Production Deployment Manual
+
+### 1. Database Setup: MongoDB Atlas
+
+1. Sign in to [MongoDB Atlas](https://www.mongodb.com/cloud/atlas) and create a free or dedicated cluster (M0/M10+).
+2. Under **Database Access**, create a database user (e.g., `queueless_admin`) with read/write privileges.
+3. Under **Network Access**, add an IP access rule:
+   - For cloud platforms (Render/Vercel dynamic egress IPs), allow access from anywhere: `0.0.0.0/0`.
+4. Under **Clusters > Connect > Drivers**, copy the connection string:
+   ```text
+   mongodb+srv://queueless_admin:<PASSWORD>@cluster0.mongodb.net/queueless?retryWrites=true&w=majority
+   ```
+
+---
+
+### 2. Backend Deployment: Render (Web Service)
+
+Deploy the Express + Socket.IO server as a **Web Service** on [Render](https://render.com).
+
+#### Exact Render Configuration Settings:
+
+| Configuration Setting | Value |
+| :--- | :--- |
+| **Service Type** | Web Service |
+| **Name** | `queueless-api` (or preferred name) |
+| **Environment** | `Node` |
+| **Region** | Select closest region to your users |
+| **Branch** | `main` |
+| **Root Directory** | `server` |
+| **Build Command** | `npm install` |
+| **Start Command** | `node src/index.js` (or `npm start`) |
+| **Health Check Path** | `/api/health` |
+| **Auto-Deploy** | Yes |
+
+#### Required Render Environment Variables:
+
+| Variable Name | Example Value | Description |
+| :--- | :--- | :--- |
+| `NODE_ENV` | `production` | Enables strict production error handling, security headers, and disables dev DB fallback. |
+| `PORT` | `10000` | Render sets this automatically; Express listens on `process.env.PORT` bound to `0.0.0.0`. |
+| `MONGODB_URI` | `mongodb+srv://...` | Full MongoDB Atlas connection string with database name. |
+| `JWT_SECRET` | `a_very_strong_random_secret_at_least_32_chars` | Secret key for signing and verifying JWT tokens. |
+| `JWT_EXPIRES_IN` | `7d` | Token expiration lifespan. |
+| `CLIENT_URL` | `https://queueless.vercel.app` | Allowed frontend origin for CORS and Socket.IO (comma-separated for multiple origins). |
+
+---
+
+### 3. Frontend Deployment: Vercel
+
+Deploy the React + Vite frontend on [Vercel](https://vercel.com).
+
+#### Exact Vercel Configuration Settings:
+
+| Configuration Setting | Value |
+| :--- | :--- |
+| **Framework Preset** | `Vite` |
+| **Root Directory** | `client` |
+| **Build Command** | `npm run build` |
+| **Output Directory** | `dist` |
+| **Install Command** | `npm install` |
+
+#### Required Vercel Environment Variables:
+
+| Variable Name | Example Value | Description |
+| :--- | :--- | :--- |
+| `VITE_API_URL` | `https://queueless-api.onrender.com/api` | Deployed Render backend API URL (with or without trailing `/api`). |
+| `VITE_SOCKET_URL` | `https://queueless-api.onrender.com` | Deployed Render backend root URL for Socket.IO WebSockets. |
+| `VITE_PUBLIC_URL` | `https://queueless.vercel.app` | Production frontend domain for QR code URL generation. |
+
+#### SPA Rewrite Guarantee (`client/vercel.json`):
+The repository contains `client/vercel.json` configured with SPA rewrites so that direct browser navigation and page refreshes on dynamic routes (e.g., `/queue/QL-APEX-4B2C` or `/admin`) never return 404:
+```json
+{
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
+```
+
+---
+
+## 💻 Local Development Setup
+
+### 1. Clone Repository & Install Dependencies
 
 ```bash
 git clone https://github.com/your-username/queueless.git
 cd queueless
-```
 
-### 2. Environment Variables Configuration
-
-Copy `.env.example` in `server/` to `.env`:
-```bash
-cp server/.env.example server/.env
-```
-
-Configure your parameters in `server/.env`:
-```env
-# Server Port
-PORT=5000
-
-# Environment Mode
-NODE_ENV=development
-
-# Allowed Frontend Client Origin
-CLIENT_URL=http://localhost:5173
-
-# Database Connection (Supports MongoDB Atlas URI or local MongoDB)
-MONGODB_URI=mongodb://localhost:27017/queueless
-
-# Secret Key for JWT Signing (Replace with a strong random string in production)
-JWT_SECRET=your_jwt_secret_key_here
-
-# JWT Token Expiration Window
-JWT_EXPIRES_IN=7d
-```
-
-### 3. Install Dependencies
-
-You can install dependencies for both client and server:
-
-```bash
-# Install backend dependencies
+# Install server dependencies
 cd server
 npm install
 
-# Install frontend dependencies
+# Install client dependencies
 cd ../client
 npm install
 ```
 
----
+### 2. Configure Environment Files
 
-## 🏃 Startup Commands
+Create `server/.env`:
+```env
+PORT=5000
+HOST=0.0.0.0
+NODE_ENV=development
+CLIENT_URL=http://localhost:5173
+MONGODB_URI=mongodb://localhost:27017/queueless
+JWT_SECRET=dev_jwt_secret_key_change_in_production
+JWT_EXPIRES_IN=7d
+```
 
-### Run Services Concurrently
+Create `client/.env.local` (optional, defaults to local proxy):
+```env
+VITE_API_URL=http://localhost:5000/api
+VITE_SOCKET_URL=http://localhost:5000
+VITE_PUBLIC_URL=http://localhost:5173
+```
 
-#### Terminal 1 — Backend Server:
+### 3. Launch Development Servers
+
+#### Terminal 1 — Backend API:
 ```bash
 cd server
 npm run dev
 ```
-*API running on [http://localhost:5000](http://localhost:5000)*  
-*Health Check: [http://localhost:5000/api/health](http://localhost:5000/api/health)*
 
 #### Terminal 2 — Frontend Client:
 ```bash
 cd client
 npm run dev
 ```
-*Web application available at [http://localhost:5173](http://localhost:5173)*
 
-*(Alternatively, run from root: `npm run dev:server` and `npm run dev:client`)*
-
----
-
-## 📡 Authentication API Documentation
-
-### 1. Register Business & Admin
-- **Route**: `POST /api/auth/register`
-- **Access**: Public
-- **Request Body**:
-  ```json
-  {
-    "businessName": "Apex Health Clinic",
-    "adminName": "Dr. Sarah Connor",
-    "email": "sarah@apexhealth.org",
-    "password": "SecurePassword123!",
-    "industry": "healthcare"
-  }
-  ```
-- **Success Response (`201 Created`)**:
-  ```json
-  {
-    "status": "success",
-    "message": "Business and administrator account registered successfully.",
-    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "user": {
-      "id": "672c...",
-      "name": "Dr. Sarah Connor",
-      "email": "sarah@apexhealth.org",
-      "role": "admin",
-      "business": {
-        "id": "672c...",
-        "name": "Apex Health Clinic",
-        "businessId": "QL-APEXH-4A82F1",
-        "industry": "healthcare"
-      }
-    }
-  }
-  ```
-
-### 2. Login User
-- **Route**: `POST /api/auth/login`
-- **Access**: Public
-- **Request Body**:
-  ```json
-  {
-    "email": "sarah@apexhealth.org",
-    "password": "SecurePassword123!",
-    "role": "admin"
-  }
-  ```
-- **Success Response (`200 OK`)**:
-  ```json
-  {
-    "status": "success",
-    "message": "Authentication successful.",
-    "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-    "user": {
-      "id": "672c...",
-      "name": "Dr. Sarah Connor",
-      "email": "sarah@apexhealth.org",
-      "role": "admin",
-      "business": {
-        "id": "672c...",
-        "name": "Apex Health Clinic",
-        "businessId": "QL-APEXH-4A82F1",
-        "industry": "healthcare"
-      }
-    }
-  }
-  ```
-
-### 3. Get Current Authenticated Session
-- **Route**: `GET /api/auth/me`
-- **Access**: Private (Requires header: `Authorization: Bearer <token>`)
-- **Success Response (`200 OK`)**:
-  ```json
-  {
-    "status": "success",
-    "user": {
-      "id": "672c...",
-      "name": "Dr. Sarah Connor",
-      "email": "sarah@apexhealth.org",
-      "role": "admin",
-      "business": {
-        "id": "672c...",
-        "name": "Apex Health Clinic",
-        "businessId": "QL-APEXH-4A82F1",
-        "industry": "healthcare"
-      }
-    }
-  }
-  ```
+Visit the application at `http://localhost:5173`.
 
 ---
 
-## 🧪 Testing Instructions
+## 🧪 Automated Testing & Verification Suite
 
-An automated end-to-end verification suite is included to validate database operations, password encryption, route protection, and proxy forwarding.
+The repository includes comprehensive automated test suites covering authentication, queue concurrency, data persistence, WebSockets, and production readiness.
 
-To run the verification suite:
+To run the complete automated test suite:
+
 ```bash
 cd server
-node test_e2e_auth.js
+npm test
 ```
 
-**Verifies:**
-- Atomic business creation and unique `QL-*` slug assignment.
-- Proper `bcrypt` password hashing (password hashes never returned in responses).
-- Rejection of duplicate email registrations (`400 Bad Request`).
-- Rejection of invalid credentials (`401 Unauthorized`).
-- Successful login and JWT issuance (`200 OK`).
-- Authenticated profile retrieval through `/api/auth/me` with valid JWT (`200 OK`).
-- Rejection of forged, expired, or missing tokens (`401 Unauthorized`).
-- Client reverse-proxy communication through Vite development port (`:5173/api/*` forwarding to `:5000/api/*`).
+### Test Suite Summary (145 Passing Assertions):
+
+1. **Phase 2 Authentication (`test_e2e_auth.js`)**:
+   - 20 assertions validating business creation, bcrypt password hashing, JWT generation, login verification, token tamper resistance, `/api/auth/me` resolution, and Vite proxy forwarding.
+2. **Phase 3 Core Queue Management (`test_e2e_queue.js`)**:
+   - 78 assertions validating queue creation, status transitions, atomic concurrency safety with simultaneous customer joins, position calculation, and cross-business isolation.
+3. **Data Persistence (`test_persistence.js`)**:
+   - Verifies that records created before a server shutdown remain fully intact in persistent storage across cold restarts.
+4. **Phase 4 Real-Time & QR Code (`test_e2e_realtime.js`)**:
+   - 41 assertions validating Socket.IO room isolation, JWT admin room authentication, public privacy shields (zero customer contact exposure), live dispatch summons, reconnection state re-synchronization, and QR code URL format.
+5. **Phase 5 Production Readiness (`test_phase5_production.js`)**:
+   - 6 assertions validating production security headers (`nosniff`, `DENY`, `X-XSS-Protection`, strict referrer), rate limiting throttler on high request volume, safe health report without credential leaks, and root service discovery.
+
+### Code Quality & Production Build:
+
+```bash
+# Frontend code linting (0 errors)
+cd client
+npm run lint
+
+# Production build verification
+cd client
+npm run build
+```
 
 ---
 
-## 🗺️ Future Roadmap
+## 📄 License
 
-- **Phase 3: Live Queue & Counter Management**
-  - Create and configure multiple service queues per business.
-  - Define custom service desks / counters with individual staff assignments.
-  - Generate dynamic QR codes for in-person contactless check-in.
-  - Implement customer ticket issuance (`Ticket` model with queue reference, position index, and status lifecycle).
-- **Phase 4: Real-Time Socket.IO Synchronization**
-  - Room-based WebSocket architecture (`queue_<id>` and `business_<id>`).
-  - Real-time customer place-in-line updates without page refresh.
-  - Audio chimes and browser notifications when a patron's ticket is called.
-  - Counter staff dispatch controls ("Call Next", "Recall", "Mark No-Show", "Complete").
-- **Phase 5: Smart Wait Times & Operations Analytics**
-  - Dynamic algorithmic wait time estimation based on rolling average service durations.
-  - Executive throughput dashboard (peak hours, customer drop-off rates, staff efficiency).
-  - Optional SMS / WhatsApp integration for customer paging.
+ISC License. Built with precision for modern queue management.

@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom';
 import { Layers } from 'lucide-react';
 import { Badge } from '../ui/Badge';
 
+const CURRENT_YEAR = new Date().getFullYear();
+
 export const Footer = () => {
   return (
     <footer className="border-t border-slate-800/80 bg-[#070a12] text-slate-400 py-12">
@@ -84,7 +86,7 @@ export const Footer = () => {
         </div>
 
         <div className="pt-8 border-t border-slate-800/60 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
-          <p>© {new Date().getFullYear()} QueueLess Systems Inc. All rights reserved.</p>
+          <p>© {CURRENT_YEAR} QueueLess Systems Inc. All rights reserved.</p>
           <div className="flex items-center gap-6">
             <span className="hover:text-slate-400 transition-colors cursor-pointer">Privacy Policy</span>
             <span className="hover:text-slate-400 transition-colors cursor-pointer">Terms of Service</span>

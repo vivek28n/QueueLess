@@ -12,7 +12,6 @@ import {
   ArrowLeft,
   Volume2,
   Share2,
-  Copy,
   Check,
 } from 'lucide-react';
 import { Button } from '../components/ui/Button';

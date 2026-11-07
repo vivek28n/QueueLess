@@ -20,7 +20,7 @@ export const QRCodeModal = ({ queue, businessName, isOpen, onClose }) => {
   if (!isOpen || !queue) return null;
 
   // Determine public queue URL (respects production VITE_PUBLIC_URL if configured)
-  const baseUrl = import.meta.env.VITE_PUBLIC_URL || window.location.origin;
+  const baseUrl = (import.meta.env.VITE_PUBLIC_URL || window.location.origin).replace(/\/+$/, '');
   const publicQueueUrl = `${baseUrl}/queue/${queue.queueCode}`;
 
   const handleCopyLink = () => {
