@@ -1,0 +1,19 @@
+{
+  "name": "queueless-workspace",
+  "version": "1.0.0",
+  "description": "QueueLess — Smart Live Queue Management System",
+  "scripts": {
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "start:server": "npm --prefix server start",
+    "build:client": "npm --prefix client run build"
+  },
+  "keywords": [
+    "queueless",
+    "live-queue",
+    "socketio",
+    "mern"
+  ],
+  "author": "",
+  "license": "ISC"
+}
