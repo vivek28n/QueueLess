@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { getDbPersistenceInfo } from '../config/db.js';
 
 export const getHealthStatus = (req, res) => {
   const dbStatusMap = {
@@ -9,6 +10,7 @@ export const getHealthStatus = (req, res) => {
   };
 
   const dbState = mongoose.connection.readyState;
+  const persistence = getDbPersistenceInfo();
 
   res.status(200).json({
     status: 'ok',
@@ -20,6 +22,8 @@ export const getHealthStatus = (req, res) => {
     database: {
       status: dbStatusMap[dbState] || 'unknown',
       readyState: dbState,
+      isPersistent: persistence.isPersistent,
+      storagePath: persistence.storagePath,
     },
     system: {
       memoryUsage: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,

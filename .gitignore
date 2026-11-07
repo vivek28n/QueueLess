@@ -23,6 +23,11 @@ out/
 # Database & local runtime data
 data/
 data/db/
+.data/
+.data/**
+*.data
+server/.data/
+server/.data/**
 *.sqlite
 *.sqlite3
 

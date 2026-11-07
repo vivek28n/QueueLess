@@ -46,7 +46,31 @@ Physical waiting lines in clinics, dining establishments, government offices, an
 - **Frontend Auth Integration**:
   - `AuthContext`: Centralized React state providing persistent authentication via `localStorage`, session verification, and `logout()` handling.
   - `ProtectedRoute`: React route guard with loading state, automatic login redirect with return-URL preservation, and role validation.
-  - User-friendly error messaging for duplicate emails, invalid credentials, and session expiries.
+
+### ✅ Phase 3: Core Queue Management
+- **Production Mongoose Models**:
+  - `Queue`: Organization reference, unique public identifier (`queueCode`), operational status (`active`, `paused`, `closed`), `currentTokenNumber`, `currentlyServing`, and configurable `averageServiceTime`.
+  - `Ticket`: Queue and business references, sequential `tokenNumber`, patron identity (`customerName`, private `customerContact`), operational lifecycle status (`waiting`, `called`, `serving`, `completed`, `skipped`, `cancelled`), and accurate timing metrics (`joinedAt`, `calledAt`, `completedAt`).
+- **Concurrency-Safe Atomic Token Generation**:
+  - Employs atomic MongoDB `$inc` operations with compound unique indexes (`{ queue: 1, tokenNumber: 1 }`) to eliminate race conditions and guarantee zero duplicate token collisions during simultaneous customer arrivals.
+- **Robust REST API Endpoints**:
+  - **Admin Queue Management (Authenticated)**:
+    - `POST /api/queues`: Creates queues with automated or custom slug generation.
+    - `GET /api/queues`: Retrieves organization queues with real-time aggregated metrics (waiting, serving, completed, estimated wait).
+    - `GET /api/queues/:id`: Detailed queue statistics, current counter session, and waiting line stream.
+    - `PATCH /api/queues/:id`: Live status adjustments (`active`, `paused`, `closed`) and operational tuning.
+    - `POST /api/queues/:id/next`: Dispatches next waiting patron to counter with automatic completion of prior sessions.
+    - `PATCH /api/tickets/:id/skip`: Skips patron with valid state-machine transition validation.
+    - `PATCH /api/tickets/:id/complete`: Concludes counter session and updates live counter state.
+  - **Public Customer APIs (Zero-Auth Guest Portal)**:
+    - `GET /api/public/queues/:queueCode`: Public queue information and real-time waiting line estimates with strict privacy isolation (no contact leak).
+    - `POST /api/public/queues/:queueCode/join`: Instant token acquisition with live position and wait time calculation (enforcing active-queue constraints).
+    - `GET /api/public/tickets/:ticketId`: Real-time position tracking (`peopleAhead`, `position`, `estimatedWaitTimeMinutes`) directly from MongoDB.
+- **Frontend Admin Desk & Guest Portals**:
+  - `AdminDashboardPage`: Interactive queue switcher, live counter dispatch console, waiting queue table, quick status controls, and queue creation modal.
+  - `CustomerQueuePage`: Mobile-first responsive digital ticket tracker with live position polling, urgent counter summon banners, and persistent ticket state restoration across page refreshes.
+- **100% Verified Disk Storage Persistence**:
+  - Configured with dedicated persistent WiredTiger storage in `server/.data/db`, verified across full server restarts.
 
 ---
 

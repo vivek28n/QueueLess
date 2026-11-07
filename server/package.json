@@ -6,7 +6,11 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+    "test": "node test_e2e_auth.js && node test_e2e_queue.js && node test_persistence.js",
+    "test:auth": "node test_e2e_auth.js",
+    "test:queue": "node test_e2e_queue.js",
+    "test:persistence": "node test_persistence.js"
   },
   "keywords": [
     "queueless",

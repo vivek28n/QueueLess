@@ -1,18 +1,68 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { spawn } from 'child_process';
+import path from 'path';
+import fs from 'fs';
+import net from 'net';
+import { fileURLToPath } from 'url';
 
-let mongoMemoryServer = null;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+let spawnedMongodProcess = null;
+let isPersistentStorage = false;
+let persistentStoragePath = null;
+
+// Helper to check if a TCP port is open
+const isPortOpen = (port = 27017, host = '127.0.0.1') => {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(1000);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once('error', () => {
+      resolve(false);
+    });
+    socket.connect(port, host);
+  });
+};
+
+// Locate a mongod binary
+const findMongodBinary = () => {
+  if (process.env.MONGOD_PATH && fs.existsSync(process.env.MONGOD_PATH)) {
+    return process.env.MONGOD_PATH;
+  }
+
+  // Look in node_modules/.cache/mongodb-memory-server
+  const cacheDir = path.resolve(__dirname, '../../node_modules/.cache/mongodb-memory-server');
+  if (fs.existsSync(cacheDir)) {
+    const files = fs.readdirSync(cacheDir);
+    const exe = files.find((f) => f.startsWith('mongod') && (f.endsWith('.exe') || !f.includes('.')));
+    if (exe) {
+      return path.join(cacheDir, exe);
+    }
+  }
+
+  return null;
+};
 
 export const connectDB = async () => {
   const configuredUri = process.env.MONGODB_URI;
 
-  // 1. If explicit URI is provided (e.g. MongoDB Atlas or custom URI), attempt connection
+  // 1. External MongoDB URI (Atlas or remote cluster)
   if (configuredUri && !configuredUri.includes('localhost') && !configuredUri.includes('127.0.0.1')) {
     try {
       const conn = await mongoose.connect(configuredUri, {
         serverSelectionTimeoutMS: 5000,
       });
       console.log(`[Database] Connected to external MongoDB: ${conn.connection.host}`);
+      isPersistentStorage = true;
+      persistentStoragePath = configuredUri;
       return conn;
     } catch (error) {
       console.error(`[Database Error] External MongoDB connection failed: ${error.message}`);
@@ -22,34 +72,110 @@ export const connectDB = async () => {
     }
   }
 
-  // 2. Try local MongoDB first if specified
+  // 2. Check if a local MongoDB daemon is already running on port 27017
+  const portOpen = await isPortOpen(27017, '127.0.0.1');
   const localUri = configuredUri || 'mongodb://127.0.0.1:27017/queueless';
-  try {
-    const conn = await mongoose.connect(localUri, {
-      serverSelectionTimeoutMS: 2000,
-    });
-    console.log(`[Database] Connected to local MongoDB daemon: ${conn.connection.host}`);
-    return conn;
-  } catch (localError) {
-    console.warn(`[Database] Local MongoDB daemon on 27017 not available (${localError.message}).`);
-    console.log('[Database] Initializing embedded in-memory MongoDB engine for seamless development...');
-    
+
+  if (portOpen) {
     try {
-      mongoMemoryServer = await MongoMemoryServer.create();
-      const memoryUri = mongoMemoryServer.getUri();
-      const conn = await mongoose.connect(memoryUri);
-      console.log(`[Database] Connected to embedded in-memory MongoDB: ${memoryUri}`);
+      const conn = await mongoose.connect(localUri, {
+        serverSelectionTimeoutMS: 3000,
+      });
+      console.log(`[Database] Connected to active local MongoDB daemon: ${conn.connection.host}:${conn.connection.port}`);
+      isPersistentStorage = true;
+      persistentStoragePath = 'local-daemon:27017';
       return conn;
-    } catch (memError) {
-      console.error(`[Database Fatal] Failed to initialize embedded MongoDB: ${memError.message}`);
-      throw memError;
+    } catch (err) {
+      console.warn(`[Database] Port 27017 open but connection failed: ${err.message}`);
     }
   }
+
+  // 3. Local daemon is not running; start local persistent mongod instance
+  const mongodBin = findMongodBinary();
+  const dataDir = process.env.MONGODB_DATA_DIR || path.resolve(__dirname, '../../.data/db');
+
+  if (!mongodBin) {
+    throw new Error(
+      '[Database Fatal] No local MongoDB daemon found on port 27017, and no local mongod binary was found to launch persistent storage. Please start MongoDB or specify MONGODB_URI.'
+    );
+  }
+
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  console.log(`[Database] Launching persistent local MongoDB engine (dbpath: ${dataDir})...`);
+  spawnedMongodProcess = spawn(
+    mongodBin,
+    ['--dbpath', dataDir, '--port', '27017', '--bind_ip', '127.0.0.1'],
+    { stdio: ['ignore', 'pipe', 'pipe'] }
+  );
+
+  spawnedMongodProcess.on('error', (err) => {
+    console.error(`[Database Engine Error] ${err.message}`);
+  });
+
+  // Wait for MongoDB to start accepting connections (up to 10 seconds)
+  let ready = false;
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    if (await isPortOpen(27017, '127.0.0.1')) {
+      ready = true;
+      break;
+    }
+  }
+
+  if (!ready) {
+    throw new Error('[Database Fatal] Timed out waiting for persistent local MongoDB engine to initialize on port 27017.');
+  }
+
+  const conn = await mongoose.connect(localUri, {
+    serverSelectionTimeoutMS: 5000,
+  });
+
+  console.log(`[Database] Successfully connected to persistent MongoDB storage: ${localUri}`);
+  isPersistentStorage = true;
+  persistentStoragePath = dataDir;
+
+  return conn;
 };
 
 export const disconnectDB = async () => {
-  await mongoose.disconnect();
-  if (mongoMemoryServer) {
-    await mongoMemoryServer.stop();
+  try {
+    if (mongoose.connection.readyState !== 0) {
+      if (spawnedMongodProcess) {
+        try {
+          await mongoose.connection.db?.admin().command({ shutdown: 1 });
+        } catch {
+          // Socket closes on shutdown
+        }
+      }
+      await mongoose.disconnect();
+    }
+  } catch (err) {
+    console.warn(`[Database Disconnect Warning] ${err.message}`);
+  }
+
+  if (spawnedMongodProcess) {
+    try {
+      spawnedMongodProcess.kill();
+    } catch {}
+    spawnedMongodProcess = null;
   }
 };
+
+export const getDbPersistenceInfo = () => ({
+  isPersistent: isPersistentStorage,
+  storagePath: persistentStoragePath,
+});
+
+// Process cleanup hooks to ensure clean database shutdown
+process.on('SIGINT', async () => {
+  await disconnectDB();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  await disconnectDB();
+  process.exit(0);
+});
