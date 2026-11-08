@@ -77,7 +77,10 @@ flowchart TD
 - Cross-tenant requests are strictly blocked at both HTTP and WebSocket boundaries.
 
 ### 6. Production Security & Reliability Hardening
-- **Sliding-Window Rate Limiting**: Built-in protection on `/api/auth/login` (brute-force defense) and `/api/public/queues/:queueCode/join` (anti-spam token throttling).
+- **Sliding-Window Rate Limiting**: Built-in protections on `/api/auth/register` (max 10/hr), `/api/auth/login` (brute-force defense, max 20/15min), and `/api/public/queues/:queueCode/join` (anti-spam token throttling, max 30/5min) with proxy IP resolution.
+- **Strict Production JWT Guard**: Hardcoded secret fallback eliminated in production; requires cryptographically strong `JWT_SECRET` (>= 32 chars) on startup.
+- **Exact CORS Whitelist**: Blanket `*.vercel.app` wildcards eliminated; only exact `CLIENT_URL` and explicitly configured `ALLOWED_ORIGINS` are permitted across HTTP and WebSockets.
+- **Input Sanitization & Password Policies**: Enforces minimum 8-character password policy, safe string type-checking to prevent NoSQL injection, and length bounds on all user inputs.
 - **Hardened HTTP Headers**: Strict `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `X-XSS-Protection: 1; mode=block`, `Referrer-Policy: strict-origin-when-cross-origin`, HSTS, and removal of `X-Powered-By`.
 - **Database Safety Guard**: Strict production mode forbids local `.data` fallback and requires MongoDB Atlas connection; unhandled server errors sanitize stack traces from client responses.
 
@@ -287,7 +290,7 @@ Deploy the Express + Socket.IO server as a **Web Service** on [Render](https://r
 | `MONGODB_URI` | `mongodb+srv://...` | Full MongoDB Atlas connection string with database name. |
 | `JWT_SECRET` | `a_very_strong_random_secret_at_least_32_chars` | Secret key for signing and verifying JWT tokens. |
 | `JWT_EXPIRES_IN` | `7d` | Token expiration lifespan. |
-| `CLIENT_URL` | `https://queueless.vercel.app` | Allowed frontend origin for CORS and Socket.IO (comma-separated for multiple origins). |
+| `CLIENT_URL` | `https://queue-less-nine.vercel.app` | Allowed frontend origin for CORS and Socket.IO (comma-separated for multiple origins). |
 
 ---
 
@@ -311,7 +314,7 @@ Deploy the React + Vite frontend on [Vercel](https://vercel.com).
 | :--- | :--- | :--- |
 | `VITE_API_URL` | `https://queueless-api.onrender.com/api` | Deployed Render backend API URL (with or without trailing `/api`). |
 | `VITE_SOCKET_URL` | `https://queueless-api.onrender.com` | Deployed Render backend root URL for Socket.IO WebSockets. |
-| `VITE_PUBLIC_URL` | `https://queueless.vercel.app` | Production frontend domain for QR code URL generation. |
+| `VITE_PUBLIC_URL` | `https://queue-less-nine.vercel.app` | Production frontend domain for QR code URL generation. |
 
 #### SPA Rewrite Guarantee (`client/vercel.json`):
 The repository contains `client/vercel.json` configured with SPA rewrites so that direct browser navigation and page refreshes on dynamic routes (e.g., `/queue/QL-APEX-4B2C` or `/admin`) never return 404:
@@ -394,18 +397,18 @@ cd server
 npm test
 ```
 
-### Test Suite Summary (145 Passing Assertions):
+### Test Suite Summary (147 Passing Assertions):
 
 1. **Phase 2 Authentication (`test_e2e_auth.js`)**:
    - 20 assertions validating business creation, bcrypt password hashing, JWT generation, login verification, token tamper resistance, `/api/auth/me` resolution, and Vite proxy forwarding.
 2. **Phase 3 Core Queue Management (`test_e2e_queue.js`)**:
    - 78 assertions validating queue creation, status transitions, atomic concurrency safety with simultaneous customer joins, position calculation, and cross-business isolation.
 3. **Data Persistence (`test_persistence.js`)**:
-   - Verifies that records created before a server shutdown remain fully intact in persistent storage across cold restarts.
+   - Verifies with explicit pre-restart and post-restart assertions that records remain fully intact in persistent storage across cold restarts.
 4. **Phase 4 Real-Time & QR Code (`test_e2e_realtime.js`)**:
    - 41 assertions validating Socket.IO room isolation, JWT admin room authentication, public privacy shields (zero customer contact exposure), live dispatch summons, reconnection state re-synchronization, and QR code URL format.
-5. **Phase 5 Production Readiness (`test_phase5_production.js`)**:
-   - 6 assertions validating production security headers (`nosniff`, `DENY`, `X-XSS-Protection`, strict referrer), rate limiting throttler on high request volume, safe health report without credential leaks, and root service discovery.
+5. **Phase 5 Production Security & Regression (`test_phase5_production.js`)**:
+   - 8 assertions validating production security headers, safe health status, exact CORS origin enforcement (blocking unwhitelisted *.vercel.app), production JWT secret validation & strength checks, registration password minimum length (8+ chars) & input type safety, registration rate limiting, production DB mode guard (via subprocess), and root metadata.
 
 ### Code Quality & Production Build:
 

@@ -24,7 +24,14 @@ const userSchema = new mongoose.Schema(
     password: {
       type: String,
       required: [true, 'Password is required'],
-      minlength: [6, 'Password must be at least 6 characters long'],
+      minlength: [8, 'Password must be at least 8 characters long'],
+      validate: {
+        validator: function (v) {
+          // bcrypt silently truncates input beyond 72 bytes; enforce strict byte limit
+          return Buffer.byteLength(v, 'utf8') <= 72;
+        },
+        message: 'Password cannot exceed 72 bytes due to bcrypt limitation',
+      },
       select: false, // Do not return password by default in queries
     },
     role: {

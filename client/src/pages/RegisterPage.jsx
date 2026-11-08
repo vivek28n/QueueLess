@@ -35,8 +35,14 @@ export const RegisterPage = () => {
     e.preventDefault();
     setErrorMessage(null);
 
-    if (formData.password.length < 6) {
-      setErrorMessage('Password must be at least 6 characters long.');
+    if (formData.password.length < 8) {
+      setErrorMessage('Password must be at least 8 characters long.');
+      return;
+    }
+
+    const passwordBytes = new TextEncoder().encode(formData.password).length;
+    if (passwordBytes > 72) {
+      setErrorMessage('Password cannot exceed 72 bytes. Note that multibyte characters (such as emojis or accented characters) occupy more than 1 byte each.');
       return;
     }
 

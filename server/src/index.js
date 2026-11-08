@@ -1,10 +1,13 @@
 import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { Server as SocketIOServer } from 'socket.io';
 import { connectDB, disconnectDB } from './config/db.js';
 import { initSocketServer } from './services/socketService.js';
+import { validateJwtSecret } from './utils/token.js';
 import healthRoutes from './routes/healthRoutes.js';
 import authRoutes from './routes/authRoutes.js';
 import queueRoutes from './routes/queueRoutes.js';
@@ -16,43 +19,52 @@ import { securityHeaders } from './middleware/securityHeaders.js';
 // Load environment variables
 dotenv.config();
 
+// Validate JWT Secret immediately on startup (fails safely in production if missing or weak)
+try {
+  validateJwtSecret();
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
+}
+
 const app = express();
 const server = http.createServer(app);
 
-// Enable trust proxy for Render / Cloud load balancers
+// Enable trust proxy for Render / Cloud load balancers (so req.ip accurately reflects the client)
 app.set('trust proxy', 1);
 
 const PORT = parseInt(process.env.PORT, 10) || 5000;
 const HOST = process.env.HOST || '0.0.0.0';
 
-// Resolve allowed CORS origins
-const getAllowedOrigins = () => {
-  const origins = ['http://localhost:5173', 'http://127.0.0.1:5173'];
-  const configured = process.env.CLIENT_URL || process.env.ALLOWED_ORIGINS;
-  if (configured) {
-    const split = configured.split(',').map((o) => o.trim()).filter(Boolean);
+// Resolve allowed CORS origins strictly:
+// - In local development: http://localhost:5173 and http://127.0.0.1:5173
+// - In production: exact CLIENT_URL and explicitly configured ALLOWED_ORIGINS only (no localhost)
+export const getAllowedOrigins = () => {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const origins = isProduction ? [] : ['http://localhost:5173', 'http://127.0.0.1:5173'];
+  const configuredValues = [process.env.CLIENT_URL, process.env.ALLOWED_ORIGINS].filter(Boolean);
+  for (const val of configuredValues) {
+    const split = val
+      .split(',')
+      .map((o) => o.trim().replace(/\/+$/, ''))
+      .filter(Boolean);
     origins.push(...split);
   }
   return Array.from(new Set(origins));
 };
 
-const corsOptions = {
+export const corsOptions = {
   origin: (origin, callback) => {
     // Allow non-browser requests (e.g. server-to-server, cURL, automated tests)
     if (!origin) return callback(null, true);
 
+    const normalizedOrigin = origin.replace(/\/+$/, '');
     const allowed = getAllowedOrigins();
-    if (allowed.includes(origin) || allowed.includes('*')) {
+
+    // Strict exact origin check against whitelist (no wildcard or suffix matching)
+    if (allowed.includes(normalizedOrigin)) {
       return callback(null, true);
     }
-
-    // Permit Vercel preview branch deployments (*.vercel.app)
-    try {
-      const url = new URL(origin);
-      if (url.hostname.endsWith('.vercel.app')) {
-        return callback(null, true);
-      }
-    } catch {}
 
     return callback(new Error(`CORS policy blocked access from origin: ${origin}`));
   },
@@ -61,7 +73,7 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 };
 
-// Socket.IO configuration with CORS and WebSocket support
+// Socket.IO configuration with CORS and WebSocket support (consistent with HTTP CORS)
 export const io = new SocketIOServer(server, {
   cors: corsOptions,
   transports: ['websocket', 'polling'],
@@ -76,8 +88,8 @@ initSocketServer(io);
 app.disable('x-powered-by');
 app.use(securityHeaders);
 app.use(cors(corsOptions));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Primary API Routes
 app.use('/api/health', healthRoutes);
@@ -164,4 +176,18 @@ const gracefulShutdown = (signal) => {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-startServer();
+// Automatically start listening only if executed directly as the main application script
+const isMain = () => {
+  if (!process.argv[1]) return false;
+  try {
+    return path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
+  } catch {
+    return false;
+  }
+};
+
+if (isMain()) {
+  startServer();
+}
+
+export { startServer, app, server };

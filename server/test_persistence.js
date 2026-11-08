@@ -1,4 +1,5 @@
 import http from 'http';
+import assert from 'assert';
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -125,6 +126,8 @@ const runPersistenceVerification = async () => {
 
   console.log('\n--- Step 2: Querying DB Verification Before Restart ---');
   const preCheckTicket = await request(`/api/public/tickets/${ticketId}`, 'GET');
+  assert.strictEqual(preCheckTicket.status, 200, 'Pre-restart ticket query must return 200 OK');
+  assert.strictEqual(preCheckTicket.data?.data?.ticket?.status, 'waiting', 'Pre-restart ticket status must be waiting');
   console.log(`[PASS] Verified pre-restart ticket status: ${preCheckTicket.data?.data?.ticket?.status}`);
 
   console.log('\n================================================================');
